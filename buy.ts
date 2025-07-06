@@ -1,55 +1,122 @@
-const axios = require('axios');
-const nodeCrypto = require('crypto');
-require('dotenv').config();
+import axios from 'axios';
+import crypto from 'crypto';
+import dotenv from 'dotenv';
+dotenv.config();
 
-// Replace these with your real values from OKX API portal
-const apiKey = process.env.OKX_API_KEY;
-const secretKey = process.env.OKX_SECRET_KEY;
-const passphrase = process.env.OKX_PASSPHRASE;
+const apiKey = process.env.OKX_API_KEY!;
+const secretKey = process.env.OKX_SECRET_KEY!;
+const passphrase = process.env.OKX_PASSPHRASE!;
 
-const timestamp = new Date().toISOString(); // OKX requires ISO8601 format
-const method = 'POST';
-const requestPath = '/priapi/v1/nft/trading/buy';
-const query = `?t=${Date.now()}`;
-const body = JSON.stringify({
-  chain: 1514,
-  items: [{
-    orderId: 7708992897, // Replace with your actual order ID
-    nftId: "39569752686861002", // Replace with your actual NFT ID
-    takeCount: 1
-  }],
-  walletAddress: "0x3f98e41fd95ddb428d5c1d6b8f3838901e788b22" // Replace with your wallet address
-});
+function generateOkxVerifySign(
+  url: string,
+  fetchConfig: { method?: string, body?: string } = {},
+  timestampForTest?: number,
+  tokenForTest?: string
+) {
+  const method = (fetchConfig.method || 'GET').toUpperCase();
+  const body = fetchConfig.body || '';
+  const token = tokenForTest || crypto.randomUUID();
 
-const preHash = timestamp + method + requestPath + query + body;
+  function computeHmacKey(t: string) {
+    const digest = crypto.createHash('sha256').update(t).digest();
+    const hexStr = Array.from(digest).map(b => b.toString(16).padStart(2, '0')).join('');
 
-// Sign the prehash with your secret key using HMAC-SHA256, then base64 encode
-const signature = nodeCrypto
-  .createHmac('sha256', secretKey)
-  .update(preHash)
-  .digest('base64');
+    const currentTs = timestampForTest || Date.now();
+    const u = Math.floor(currentTs / 1000);
+    const s = Math.floor(u / 600) % 32;
+    const l = Math.floor(u / 3600) % 32;
 
+    let keyStr = '';
+    for (let f = 0; f < 32; f++) {
+      const idx = (s + (l + f) * f) % 32;
+      keyStr += hexStr[idx];
+    }
 
-console.log(signature);
-
-axios({
-  method: method,
-  url: `https://web3.okx.com${requestPath}${query}`,
-  data: body, // Add this line
-  headers: {
-    'OK-ACCESS-KEY': apiKey,
-    'OK-ACCESS-SIGN': signature,
-    'OK-VERIFY-SIGN': "Qax63JacIPKUmlsTkk0rKWsFNxSVfc0VFJfbHrS9uEI=",
-    'OK-VERIFY-TOKEN': 'd07f1909-51ef-458a-b853-5b89d3c8718d',
-    'OK-ACCESS-TIMESTAMP': timestamp,
-    'OK-ACCESS-PASSPHRASE': passphrase,
-    'content-type': 'application/json', // Add this header
+    return { key: Buffer.from(keyStr, 'utf-8'), timestamp: currentTs };
   }
-})
-.then((response: any) => {
-  console.log(response.data.data.data);
-  
-})
-.catch((error: any) => {
-  console.error('Error:', error.response?.data || error.message);
-});
+
+  function buildSigningString(): string {
+    const baseUrl = url.split('?')[0];
+    if (['POST', 'PUT'].includes(method)) {
+      return (baseUrl + body).replace(/ /g, '');
+    }
+    return url.replace('?', '');
+  }
+
+  const keyData = computeHmacKey(token);
+  const signingMsg = buildSigningString();
+  console.log("sign msg", signingMsg);
+  const hmac = crypto.createHmac('sha256', keyData.key)
+    .update(signingMsg)
+    .digest('base64');
+
+  return {
+    'ok-verify-token': token,
+    'ok-timestamp': String(keyData.timestamp),
+    'ok-verify-sign': hmac
+  };
+}
+
+async function main() {
+  const requestPath = '/api/v5/mktplace/nft/markets/buy';
+  const msTimestamp = Date.now();
+  const query = `?t=${msTimestamp}`;
+  const url = `https://web3.okx.com${requestPath}${query}`;
+
+  const bodyPayload = {
+    chain: 8453,
+    items: [{
+      orderId: 7724978122,
+      // nftId: "39572774691281610",
+      takeCount: 1
+    }],
+    walletAddress: "0xed20be1edafc77800594f2996de7329a4d9c1b6a"
+  };
+
+  const bodyStr = JSON.stringify(bodyPayload);
+  const timestamp = new Date(msTimestamp).toISOString(); // ISO8601 UTC
+  const preHash = timestamp + 'POST' + requestPath + query + bodyStr;
+
+  const signature = crypto.createHmac('sha256', secretKey)
+    .update(preHash)
+    .digest('base64');
+
+  const verifyHeaders = generateOkxVerifySign(url, { method: 'POST', body: bodyStr }, msTimestamp);
+
+  console.log('Generated verify headers:', verifyHeaders);
+
+  try {
+
+    console.log('🚀 Making request to:', url);
+    console.log('📦 Request body:', bodyStr);
+    console.log('�� Headers:', {
+      'OK-ACCESS-KEY': apiKey,
+      'OK-ACCESS-SIGN': signature,
+      'OK-ACCESS-TIMESTAMP': timestamp,
+      'OK-ACCESS-PASSPHRASE': passphrase,
+      'Content-Type': 'application/json',
+      ...verifyHeaders
+    });
+
+    
+    const res = await axios({
+      method: 'POST',
+      url,
+      data: bodyStr,
+      headers: {
+        'OK-ACCESS-KEY': apiKey,
+        'OK-ACCESS-SIGN': signature,
+        'OK-ACCESS-TIMESTAMP': timestamp,
+        'OK-ACCESS-PASSPHRASE': passphrase,
+        'Content-Type': 'application/json',
+        ...verifyHeaders
+      }
+    });
+
+    console.log('✅ SUCCESS:', res.data);
+  } catch (error: any) {
+    console.error('❌ ERROR:', error.response?.data || error.message);
+  }
+}
+
+main();

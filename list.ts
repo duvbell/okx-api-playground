@@ -34,7 +34,8 @@ axios({
   }
 })
 .then((response: any) => {
-  console.log(response.data.data.data);
+  console.log(response.data.data.data[0]);
+  console.log(response.data.data.data[0].protocolData.parameters.offer);
   
 })
 .catch((error: any) => {
